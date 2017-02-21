@@ -67,6 +67,13 @@
     <Content Include="App.config" />
     <Compile Include="Node.fs" />
     <None Include="packages.config" />
+    <Compile Include="SnapshotNode.fsx" />
+    <Compile Include="Client.fsx" />
+    <Compile Include="Communication.fsx" />
+    <Compile Include="HelloNode.fsx" />
+    <Compile Include="HelloNode1.fsx" />
+    <Compile Include="HelloNode2.fsx" />
+    <Compile Include="NetworkingNode.fsx" />
   </ItemGroup>
   <ItemGroup>
     <Reference Include="mscorlib" />
