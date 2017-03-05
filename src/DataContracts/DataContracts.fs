@@ -33,10 +33,7 @@ type BasicMessage<'a> = {
 
 /// Snapshot message is a marker message to indicate that a node needs to
 /// take a snapshot of its state and state of its incoming channels.
-/// Node who sends a snapshot message also sends a list of
-/// messages it sent to current node and thinks are now still in transit.
-type SnapshotMessage<'a> = {
-    inTransit: BasicMessage<'a> list
+type SnapshotMessage = {
     address: string
     port: int
 }

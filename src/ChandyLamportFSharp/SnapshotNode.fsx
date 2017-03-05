@@ -1,16 +1,14 @@
 #load "NetworkingNode.fsx"
 #r "../DataContracts/bin/Debug/DataContracts.dll"
-#r "../../packages/build/Newtonsoft.Json/lib/net45/Newtonsoft.Json.dll"
+#r "../../packages/FSharp.Collections.ParallelSeq.1.0.2/lib/net40/FSharp.Collections.ParallelSeq.dll"
 
 open System
 open System.Net
-open System.Net.Sockets
 open DataContracts
 open NetworkingNode
-open Newtonsoft.Json
-open System.Text
 open Communication
 open System.Collections.Generic
+open FSharp.Collections.ParallelSeq
 
 (*
     Termination:
@@ -58,7 +56,7 @@ type SnapshotNode(id, ipAddress, port) =
 
     member this.N = new NetworkingNode(id, ipAddress, port, this.MessageRoundAbout)
 
-    // Indicates whether a node needs to take a local snapshot
+    /// Indicates whether a node needs to take a local snapshot
     member this.ShouldTakeASnapshot
         with get () = shouldTakeASnapshot
         and set (value) = shouldTakeASnapshot <- value
@@ -74,61 +72,123 @@ type SnapshotNode(id, ipAddress, port) =
         with get () = stateSnapshot
         and set value = stateSnapshot <- value
 
-    // Represents all the nodes current node can reach.
-    member val ConnectedNeighbors = new ResizeArray<ServerEndpoint>()
+    /// All the nodes current node can reach.
+    member val ConnectedNeighbors = new HashSet<ServerEndpoint>()
 
-    // Represents a map of nodes and states of channels going from indicated server endpoints to current node.
+    /// A map of node endpoints and states of channels going from indicated server endpoints to current node.
     member val ChannelStatesSnapshot = new Dictionary<ServerEndpoint, ChannelState> ()
 
-    // Messages received by the current node for which it has already sent an acknowledgement to message sender.
-    member val AcknowledgedReceivedMessages = new ResizeArray<Message>()
+    // Tracks which incoming nodes have already sent a marker message to current node.
+    member val ReceivedMarkerFrom = new Dictionary<ServerEndpoint, bool> ()
 
-    // Messages sent by the current node but not yet acknowledged delivery to its destination.
-    member val SentButUnacknowledgedMessages = new ResizeArray<Message>()
+    /// Messages received by the current node for which it has already sent an acknowledgement to message sender.
+    // member val AcknowledgedReceivedMessages = new ResizeArray<Message>()
+
+    /// Messages sent by the current node but not yet acknowledged delivery to its destination.
+    // member val SentButUnacknowledgedMessages = new ResizeArray<Message>()
 
     (* State operations *)
 
+    /// This method can be generalized to allow a general check if one node can exchange state with another one.
     member this.HasEnoughToTransfer amount = async {
-        return not <| (this.State - amount < 0)
+        return this.State - amount >= 0
     }
 
     (* Neighbors *)
 
     member this.AddNeighbor (endpoint: ServerEndpoint) = async {
         try
-            if not <| this.ConnectedNeighbors.Contains(endpoint)
-            then this.ConnectedNeighbors.Add(endpoint)
+            this.ConnectedNeighbors.Add endpoint |> ignore
         with
         | e -> printf "Exception adding outgoing channel to node %A:%A %A" endpoint.Ip endpoint.Port e
     }
 
-    (* Snapshots *)
+    (* Snapshots TLA+ specification
+
+	   InitiateSnapshot(p) ==
+		    /\ RuleApplicationCount' = RuleApplicationCount + 1
+		    /\ NodeStateSnapshots[p] < 0 
+		    /\ \A q \in Channels[p] : MessagesInChannels' = [MessagesInChannels EXCEPT ![p] = [MessagesInChannels[p] EXCEPT ![q] = Append(MessagesInChannels[p][q], -1)]]
+		    /\ MarkersSent' = MarkersSent \cup {p}
+		    /\ NodeStateSnapshots' = [NodeStateSnapshots EXCEPT ![p] = NodeStates[p]] 
+		    /\ UNCHANGED<<NodeStates, MessagesToSnapshot, ChannelStateSnapshots>>
+		 
+	   ReceiveMarker(p, q) ==
+		    /\ RuleApplicationCount' = RuleApplicationCount + 1
+		    /\ MessagesInChannels[p][q] # <<>>
+		    /\ ~Head(MessagesInChannels[p][q]) \in Nat
+		    /\ NodeStateSnapshots' = IF q \in MarkersSent THEN NodeStateSnapshots ELSE [NodeStateSnapshots EXCEPT ![q] = NodeStates[q]]
+		    /\ MarkersSent' = IF q \in MarkersSent THEN MarkersSent ELSE MarkersSent \cup {q} 
+		    /\ ChannelStateSnapshots' = 
+		           IF q \in MarkersSent 
+		           THEN [ChannelStateSnapshots EXCEPT ![p][q] = MessagesToSnapshot[p][q]] 
+		           ELSE [ChannelStateSnapshots EXCEPT ![p][q] = <<>>]  
+		    /\ MessagesInChannels' = LET nw == [MessagesInChannels EXCEPT ![p] = [MessagesInChannels[p] EXCEPT ![q] = Tail(MessagesInChannels[p][q])]] IN
+		           IF q \in MarkersSent 
+		           THEN nw 
+		           ELSE [nw EXCEPT ![q] = [r \in Channels[q] |-> Append(nw[q][r], -1)]]
+		    /\ UNCHANGED<<NodeStates, MessagesToSnapshot>>
+	*)
 
     member this.InitiateSnapshot () = async {
         // Capture own state into StateSnapshot
         // Send snapshot messages to all connected neighbors
-        //
+        if this.ShouldTakeASnapshot = Yes then
+            do! this.PersistNodeState()
+            do! this.SendSnapshotMessageToOutgoingChannels()
+    }
+
+    member this.ReceiveSnapshotMessage (s: SnapshotMessage) = async {
+        let sender = { Ip = IPAddress.Parse(s.address); Port = s.port }
+
+        // Remember, that current node has already received a snapshot message from this sender.
+        this.ReceivedMarkerFrom.[sender] <- true
+
+        // In case current node hasn't taken a snapshot yet
+        if this.ShouldTakeASnapshot = Yes then
+
+            // Record it's own state.
+            do! this.PersistNodeState()
+
+            // Record the state of channel from sender to current node as {empty} set.
+            this.ChannelStatesSnapshot.[sender] <- new ChannelState()
+            do! this.PersistChannelState sender
+
+            // And send snapshot messages to all outgoing channels.
+            do! this.SendSnapshotMessageToOutgoingChannels()
+
+        // In case current node has already recorded its local state
+        else
+            // We need to record a state of incomming channel from sender to current node,
+            // which is a set of messages received after current node recorded its state
+            // and before current node received a marker from the sender.
+            do! this.PersistChannelState sender
+
         ()
     }
 
-    member this.ReceiveSnapshotMessage () = async {
-        ()
+    member this.SendSnapshotMessageToOutgoingChannels () = async {
+        this.ConnectedNeighbors |> PSeq.iter (fun node ->
+            async {
+                printfn "Sending marker from %A:%A to %A:%A" ipAddress port node.Ip node.Port
+                let snapshot =
+                    {
+                        address = ipAddress.ToString()
+                        port = port
+                    }
+                do! this.N.SendMessageToNeighbor node snapshot
+            } |> Async.Start)
     }
 
-    member this.SendSnapshotMessage () = async {
-        ()
+    member this.PersistChannelState (sender: ServerEndpoint) = async {
+        printfn "Channel state from %A:%A to %A is %A"
+            sender.Ip sender.Port id (this.ChannelStatesSnapshot.[sender] |> Seq.toList)
     }
 
-    member this.ComputeAndPersistChannelState () = async {
-        // Compare list of messages sender node sent to us and haven't received an ACK for
-        // and a list of messages from sender we have sent an ACK for, and finding the difference.
-        // The difference is going to be messages in transit for snapshot.
-        ()
-    }
-
-    member this.ComputeAndPersistNodeState () = async {
-        // Save a value from state into
-        ()
+    member this.PersistNodeState () = async {
+        this.ShouldTakeASnapshot <- AlreadyDone
+        this.StateSnapshot <- this.State
+        printfn "Snapshot state of %A IS %A" id (this.StateSnapshot.ToString())
     }
 
     member this.TerminateSnapshotForMyself () = async {
@@ -136,62 +196,79 @@ type SnapshotNode(id, ipAddress, port) =
     }
 
 
-    (* Basic messages *)
+    (* Basic messages TLA+ specification
 
-(*
-	SendMoney(p, q) ==
-	    /\ RuleApplicationCount' = RuleApplicationCount + 1
-	    /\ \E m \in 1 .. NodeStates[p] : 
-	        /\ MessagesInChannels' = [MessagesInChannels EXCEPT ![p] = [MessagesInChannels[p] EXCEPT ![q] = Append(MessagesInChannels[p][q], m)]]
-	        /\ NodeStates' = [NodeStates EXCEPT ![p] = NodeStates[p] - m]
-	    /\ UNCHANGED<<MessagesToSnapshot, MarkersSent, NodeStateSnapshots, ChannelStateSnapshots>>
-	 
-	ReceiveMoney(p, q) ==
-	    /\ RuleApplicationCount' = RuleApplicationCount + 1
-	    /\ MessagesInChannels[p][q] # <<>>
-	    /\ Head(MessagesInChannels[p][q]) # -1
-	    /\ NodeStates' = [NodeStates EXCEPT ![q] = NodeStates[q] + Head(MessagesInChannels[p][q])]
-	    /\ MessagesInChannels' = [MessagesInChannels EXCEPT ![p] = [MessagesInChannels[p] EXCEPT ![q] = Tail(MessagesInChannels[p][q])]]
-	    /\ MessagesToSnapshot' =
-	           IF NodeStateSnapshots[q] < 0
-	           THEN MessagesToSnapshot
-	           ELSE [MessagesToSnapshot EXCEPT ![p] = [MessagesToSnapshot[p] EXCEPT ![q] = Append(MessagesToSnapshot[p][q], Head(MessagesInChannels[p][q]))]]
-	    /\ UNCHANGED<<MarkersSent, NodeStateSnapshots, ChannelStateSnapshots>>
-*)
+	   SendMoney(p, q) ==
+		    /\ RuleApplicationCount' = RuleApplicationCount + 1
+		    /\ \E m \in 1 .. NodeStates[p] :
+		        /\ MessagesInChannels' = [MessagesInChannels EXCEPT ![p] = [MessagesInChannels[p] EXCEPT ![q] = Append(MessagesInChannels[p][q], m)]]
+		        /\ NodeStates' = [NodeStates EXCEPT ![p] = NodeStates[p] - m]
+		    /\ UNCHANGED<<MessagesToSnapshot, MarkersSent, NodeStateSnapshots, ChannelStateSnapshots>>
+
+	   ReceiveMoney(p, q) ==
+		    /\ RuleApplicationCount' = RuleApplicationCount + 1
+		    /\ MessagesInChannels[p][q] # <<>>
+		    /\ Head(MessagesInChannels[p][q]) # -1
+		    /\ NodeStates' = [NodeStates EXCEPT ![q] = NodeStates[q] + Head(MessagesInChannels[p][q])]
+		    /\ MessagesInChannels' = [MessagesInChannels EXCEPT ![p] = [MessagesInChannels[p] EXCEPT ![q] = Tail(MessagesInChannels[p][q])]]
+		    /\ MessagesToSnapshot' =
+		           IF NodeStateSnapshots[q] < 0
+		           THEN MessagesToSnapshot
+		           ELSE [MessagesToSnapshot EXCEPT ![p] = [MessagesToSnapshot[p] EXCEPT ![q] = Append(MessagesToSnapshot[p][q], Head(MessagesInChannels[p][q]))]]
+		    /\ UNCHANGED<<MarkersSent, NodeStateSnapshots, ChannelStateSnapshots>>
+	*)
 
     member this.SendBasicMessage (amount: Contents) (node: ServerEndpoint) = async {
         let! invariant = this.HasEnoughToTransfer amount
         if invariant then
             // Extracting the amount from current state.
             this.State <- this.State - amount
+
             // Preparing a message with amount to send.
             let messageToSend =
-                { 
+                {
                     id = Guid.NewGuid().ToString()
                     contents = amount
                     address = ipAddress.ToString()
                     port = port
-                    needAck = true
+                    needAck = false
                 }
-            // Putting the message in the list of messages sent, but not yet acknowledged.
-            this.SentButUnacknowledgedMessages.Add messageToSend
+
             // Sending a basic message to known endpoint.
             do! this.N.SendMessageToNeighbor node messageToSend
-        else ()
+        else
+            printfn "Not enough money to send %d: only %d left" amount this.State
     }
 
     member this.ReceiveBasicMessage (m: Message) = async {
-        let sender = {Ip = IPAddress.Parse(m.address); Port = m.port}
-        // Updating the state.
-        this.State <- this.State + m.contents
-        // If current node has already taken a snapshot of its state,
-        // then put received message in the list of messages to snapshot.
-        if this.ShouldTakeASnapshot = AlreadyDone then
-            this.ChannelStatesSnapshot.[sender].Add(m)
-        if m.needAck then
-            do! this.AcknowledgeMessage m.id sender
+        let sender = { Ip = IPAddress.Parse m.address; Port = m.port }
+       
+        // 1. If current node has already taken its own snapshot, but didn't receive a marker from this sender yet:
+        //    we need to record current message from this sender into messagesInTransit from sender to our node.
+
+        if this.ShouldTakeASnapshot = AlreadyDone && not <| this.ReceivedMarkerFrom.[sender] then
+            this.ChannelStatesSnapshot.[sender].Add m
+
+        // 2. If this node didn't take a snapshot yet:
+        //    then it just processes a basic message and doesn't record it into snapshotted state
+        //
+        // 3. If this node has already taken its own snapshot, and already received a marker from sender:
+        //    we shoudl not record current message into messagesInTransit, because it's not a part of snapshotted state,
+        //    so we can just do a normal processing on this basic message
+
+        // Hence, message processing is necessary for all cases.
+        do! this.ProcessBasicMessage m
+
+        // That means, each node needs to store a list of nodes, who it has already received a marker from.
+        // It can be a map with the key of sender endpoint and a value of messagesInTransit
+
     }
 
+    member this.ProcessBasicMessage (m: Message) = async {
+        // Updating the state.
+        this.State <- this.State + m.contents
+        printfn "Received %A dollars, now balance is %A" m.contents this.State
+    }
 
     (* Acknowledgements *)
 

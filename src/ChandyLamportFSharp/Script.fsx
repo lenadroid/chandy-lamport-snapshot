@@ -73,8 +73,8 @@ type Node(initialState: State, name: string) =
     // Print state of a node and mark the snapshot as already done
     member this.TakeLocalSnapshot() =
         async {
-        this.ShouldITakeASnapshot <- AlreadyDone
-        printfn "SNAPSHOT OF %A IS %A" this.Name (this.State.ToString())
+            this.ShouldITakeASnapshot <- AlreadyDone
+            printfn "SNAPSHOT OF %A IS %A" this.Name (this.State.ToString())
         } |> Async.Start
 
     // Checks if the Snapshot process has been initiated
