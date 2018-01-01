@@ -1,13 +1,11 @@
 #r "../../packages/build/Newtonsoft.Json/lib/net45/Newtonsoft.Json.dll"
 
-open System
 open System.Net
 open System.Net.Sockets
-open System.Threading
 open System.Text
 open Newtonsoft.Json
 
-let settings = new JsonSerializerSettings(TypeNameHandling = TypeNameHandling.All)
+let settings = JsonSerializerSettings(TypeNameHandling = TypeNameHandling.All)
 
 /// Accepts a byte array and returns an object as a result it's decerialization.
 let getObjectFromBytes (messageBytes: byte array) =
@@ -21,7 +19,7 @@ type ServerEndpoint = { Ip: IPAddress; Port: int }
 type NodeId = string * ServerEndpoint
 
 type AsyncTcpServer(address, port, processServerRequest) =
-        let listener = new TcpListener(address, port)
+        let listener = TcpListener(address, port)
         member this.Start() =
             async {
                 do this.Run()
@@ -32,7 +30,6 @@ type AsyncTcpServer(address, port, processServerRequest) =
             listener.Start()
             while true do
                 let client = listener.AcceptTcpClient()
-                printfn "New client: %A" (box client.Client.RemoteEndPoint :?> IPEndPoint).Address
                 async {
                     try
                         do! processServerRequest client

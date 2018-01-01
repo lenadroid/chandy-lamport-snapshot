@@ -31,10 +31,8 @@ type NetworkingNode (id, ipAddress, port, roundabout) =
     /// It adds the sender into the collection of neighbors if it's not there already.
     /// Finally it transfers message processing to ReceiveMessage function.
     member this.ReceivedConnectRequest (client: TcpClient) = async {
+        // For the future to manage neighbors
         let clientAddress = box client.Client.RemoteEndPoint :?> IPEndPoint
-
-        // How to manage neighbors?
-        // this.neighbors.Add(clientAddress)
 
         let stream = client.GetStream()
         do! this.ReceiveMessage stream
@@ -45,6 +43,7 @@ type NetworkingNode (id, ipAddress, port, roundabout) =
     /// The first 4 bytes received is a size of a message.
     /// Rest of the bytes are read untill the message size is reached.
     member this.ReceiveMessage (stream: NetworkStream) = async {
+        // printfn "Received a message in networking node..."
         // uy - unsigned 8-bit natural number
         try
             let sizeBytes = Array.create 4 0uy
@@ -53,7 +52,9 @@ type NetworkingNode (id, ipAddress, port, roundabout) =
             let dataBuffer = Array.create size 0uy
             let! bytesReceived = stream.AsyncRead(dataBuffer, 0, size)
             if bytesReceived = 0 then printfn "Zero bytes received."
-            else do! roundabout dataBuffer
+            else
+                // printfn "Redirecting into roundabout..."
+                do! roundabout dataBuffer
         with
         | :? System.ObjectDisposedException ->
             printfn "Connection is closed."

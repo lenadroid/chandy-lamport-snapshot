@@ -29,6 +29,7 @@ type BasicMessage<'a> = {
     address: string
     port: int
     needAck: bool
+    delay: int
 }
 
 /// Snapshot message is a marker message to indicate that a node needs to

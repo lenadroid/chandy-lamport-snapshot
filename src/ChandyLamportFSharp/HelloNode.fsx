@@ -2,28 +2,16 @@
 #r "../DataContracts/bin/Debug/DataContracts.dll"
 #r "../../packages/build/Newtonsoft.Json/lib/net45/Newtonsoft.Json.dll"
 
-open System
 open System.Net
-open System.Net.Sockets
 open DataContracts
 open NetworkingNode
-open Newtonsoft.Json
-open System.Text
 open Communication
-
-(*
-    Next goals:
-    - Adding neighbors to the collection
-    - Heartbeat mechanism to keep active neighbors collection up to date
-    - Unique identifiers for new messages
-    - Log and history of all messages
-*)
 
 /// A node of bunnywolf distributed system.
 /// When an instance is created - a TCP server is started listening for requests on specified ipAddress and port.
 /// Nodes can exchange messages with each other, keep track of neighbors and be a part of a distributed system.
 type HelloNode(id, ipAddress, port) =
-    member this.n = new NetworkingNode(id, ipAddress, port, this.MessageRoundAbout)
+    member this.n = NetworkingNode(id, ipAddress, port, this.MessageRoundAbout)
 
     /// Sends a Hello message to a specified server endpoint.
     member this.SendHelloMessageTo(neighbor: ServerEndpoint) = async {

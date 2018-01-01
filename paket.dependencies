@@ -8,8 +8,6 @@ group Build
   nuget SourceLink.Fake
   nuget FAKE
   nuget FSharp.Formatting
-  nuget Akka.Cluster ~ 1.1.2
-  nuget Akka.FSharp
   nuget FSharp.Data
   nuget Newtonsoft.Json
 
